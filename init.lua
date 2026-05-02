@@ -1,3 +1,4 @@
+vim.opt.autoread = true
 vim.opt.termguicolors = true
 vim.cmd.colorscheme("habamax")
 
@@ -1444,4 +1445,152 @@ end, {
 	noremap = true,
 	silent = true,
 	desc = "FloatTerm: previous tab",
+})
+
+-- ============================================================================
+-- PYTHON INTERPRETER SELECTOR
+-- ============================================================================
+
+local function project_root()
+	local cwd = vim.fn.getcwd()
+
+	local markers = {
+		"pyproject.toml",
+		"setup.py",
+		"setup.cfg",
+		"requirements.txt",
+		".git",
+	}
+
+	for _, marker in ipairs(markers) do
+		local found = vim.fs.find(marker, {
+			path = cwd,
+			upward = true,
+		})[1]
+
+		if found then
+			return vim.fn.fnamemodify(found, ":h")
+		end
+	end
+
+	return cwd
+end
+
+local function interpreter_file()
+	local root = project_root()
+	return root .. "/.nvim/python-interpreter"
+end
+
+local function read_saved_python_interpreter()
+	local file = interpreter_file()
+
+	if vim.fn.filereadable(file) == 0 then
+		return nil
+	end
+
+	local lines = vim.fn.readfile(file)
+
+	if #lines == 0 or lines[1] == "" then
+		return nil
+	end
+
+	return lines[1]
+end
+
+local function save_python_interpreter(path)
+	local root = project_root()
+	local dir = root .. "/.nvim"
+
+	if vim.fn.isdirectory(dir) == 0 then
+		vim.fn.mkdir(dir, "p")
+	end
+
+	vim.fn.writefile({ path }, interpreter_file())
+end
+
+local function apply_python_interpreter(path)
+	if not path or path == "" then
+		return
+	end
+
+	if vim.fn.executable(path) ~= 1 then
+		vim.notify("Python interpreter is not executable: " .. path, vim.log.levels.WARN)
+		return
+	end
+
+	vim.g.python3_host_prog = path
+
+	for _, client in ipairs(vim.lsp.get_clients({ name = "pyright" })) do
+		client.config.settings = client.config.settings or {}
+		client.config.settings.python = client.config.settings.python or {}
+
+		client.config.settings.python.pythonPath = path
+
+		client.notify("workspace/didChangeConfiguration", {
+			settings = client.config.settings,
+		})
+	end
+
+	vim.notify("Python interpreter: " .. path)
+end
+
+local function detect_python_interpreter()
+	local root = project_root()
+
+	local candidates = {
+		root .. "/.venv/bin/python",
+		root .. "/venv/bin/python",
+		root .. "/env/bin/python",
+		vim.fn.exepath("python3"),
+		vim.fn.exepath("python"),
+	}
+
+	for _, path in ipairs(candidates) do
+		if path and path ~= "" and vim.fn.executable(path) == 1 then
+			return path
+		end
+	end
+
+	return nil
+end
+
+local function select_python_interpreter()
+	local saved = read_saved_python_interpreter()
+	local detected = saved or detect_python_interpreter() or ""
+
+	local path = vim.fn.input("Python interpreter path: ", detected, "file")
+
+	if path == "" then
+		return
+	end
+
+	save_python_interpreter(path)
+	apply_python_interpreter(path)
+end
+
+local function load_project_python_interpreter()
+	local saved = read_saved_python_interpreter()
+
+	if saved then
+		apply_python_interpreter(saved)
+		return
+	end
+
+	local detected = detect_python_interpreter()
+
+	if detected then
+		apply_python_interpreter(detected)
+	end
+end
+
+vim.api.nvim_create_user_command("PyInterpreter", select_python_interpreter, {})
+
+vim.keymap.set("n", "<leader>pi", select_python_interpreter, {
+	desc = "Select Python interpreter",
+})
+
+vim.api.nvim_create_autocmd({ "VimEnter", "DirChanged" }, {
+	callback = function()
+		load_project_python_interpreter()
+	end,
 })
